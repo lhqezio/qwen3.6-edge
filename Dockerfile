@@ -54,7 +54,9 @@ WORKDIR /src
 # -DGGML_CUDA=ON: enable CUDA backend
 # -DCMAKE_BUILD_TYPE=Release: optimized build
 # -DGGML_NATIVE=OFF: don't use host CPU optimizations (Docker compatibility)
-RUN cmake -B build -G Ninja \
+RUN cp /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 \
+    && cp /usr/local/cuda/lib64/stubs/libcuda.so /usr/lib/x86_64-linux-gnu/libcuda.so.1 \
+    && cmake -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES=120 \
     -DGGML_CUDA=ON \
