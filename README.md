@@ -1,6 +1,6 @@
 # qwen3.6-edge
 
-A patched fork of [llama.cpp](https://github.com/ggerganov/llama.cpp) via [EsmaeelNabil/llama.cpp-mtp-turbo-quant](https://github.com/EsmaeelNabil/llama.cpp-mtp-turbo-quant), enabling Qwen3.6-35B-A3B (MTP variant) to run at full 128K context on consumer hardware.
+A patched fork of [llama.cpp](https://github.com/ggerganov/llama.cpp), enabling Qwen3.6-35B-A3B (MTP variant) to run at full 128K context on consumer hardware.
 
 ## Quick Start
 
@@ -28,25 +28,21 @@ cmake --build build --target llama-server -j$(nproc)
 
 ---
 
-## What the Base Fork Provides (EsmaeelNabil/llama.cpp-mtp-turbo-quant)
+## Patches on Top of llama.cpp
 
-This repo builds on top of [EsmaeelNabil/llama.cpp-mtp-turbo-quant](https://github.com/EsmaeelNabil/llama.cpp-mtp-turbo-quant), which itself patches upstream llama.cpp with two major features:
-
-### TurboQuant KV Cache Compression
+### Patch 1: TurboQuant KV Cache Compression
 
 Introduces new `turbo2` and `turbo3` cache types that compress the KV cache in-place using rotation-based quantization. This dramatically reduces memory for long-context inference, enabling 128K+ context on 16GB GPUs where the uncompressed KV cache alone would exceed VRAM.
 
 Key files changed: `src/llama-kv-cache.cpp` (+436), `src/llama-graph.cpp` (+138), `src/llama-context.cpp` (+29), plus new `src/turbo-rotation-data.h` (4103 lines of precomputed rotation matrices).
 
-### MTP Speculative Decoding
+### Patch 2: MTP Speculative Decoding
 
 Adds Multi-Token Prediction (MTP) support, allowing the model to draft multiple future tokens in a single forward pass. The draft head shares the trunk's self-attention, so draft tokens benefit from the full context window. On Qwen3.6-35B-A3B, this achieves 98-99% draft acceptance with negligible overhead.
 
 Key files added: `src/models/qwen35moe_mtp.cpp` (252 lines), `src/models/qwen35_mtp.cpp` (207 lines), `src/models/models.h` (+26). The server gains `--spec-type mtp`, `--spec-draft-n-max`, and `--spec-draft-n-cpu-moe` flags.
 
-### Our Patches (on top of the base fork)
-
-### Patch 1: sm_120 FlashAttention Occupancy Fallback
+### Patch 3: sm_120 FlashAttention Occupancy Fallback
 
 **File:** `ggml/src/ggml-cuda/fattn-common.cuh:1425-1435`
 
@@ -54,7 +50,7 @@ Key files added: `src/models/qwen35moe_mtp.cpp` (252 lines), `src/models/qwen35_
 
 The fix catches the failed occupancy query and falls back to the kernel's `__launch_bounds__(128, 2)` annotation, which provides a safe occupancy estimate of 2 blocks per SM.
 
-### Patch 2: MTP Head Tensor Loading
+### Patch 4: MTP Head Tensor Loading
 
 **Files:** `src/models/qwen35moe-mtp.cpp`, `src/models/models.h`
 
@@ -62,7 +58,7 @@ Qwen3.6-35B-A3B has `n_layer=41` (40 trunk layers + 1 MTP head). The upstream MT
 
 The fix tracks the original `n_layer` (41) in `mtp_trunk_n_layer`. In `load_arch_tensors`, it skips trunk layer indices. For the MTP block, `tensor_il = i` so GGUF tensor names match the model's block indices.
 
-### Patch 3: MTP Head Q+Gate Fused Tensor
+### Patch 5: MTP Head Q+Gate Fused Tensor
 
 **File:** `src/models/qwen35moe-mtp.cpp:148-170`
 
@@ -70,7 +66,7 @@ Qwen3.6's attention uses an "output gate" — the Q projection's output is `2 * 
 
 The fix creates Q with the correct fused dimension (`n_embd_head * n_head * 2`), splits Q and gate via `ggml_view_3d` with a stride of `n_embd_head * 2`, and applies `sigmoid(gate) * attn_out` before the output projection, matching the trunk's full-attention layers.
 
-### Patch 4: split_sum Guard
+### Patch 6: split_sum Guard
 
 **File:** `src/llama-model.cpp:1228-1240`
 
@@ -78,7 +74,7 @@ When loading a second model after the first has consumed all GPU memory, device 
 
 The fix guards against invalid `split_sum` with `if (!(split_sum > 0.0f))`, falling back to all-on-one-device.
 
-### Patch 5: layer_gpu OOB Clamp
+### Patch 7: layer_gpu OOB Clamp
 
 **File:** `src/llama-model.cpp:1249-1251`
 
@@ -131,7 +127,6 @@ Both Dockerfiles accept these environment variables (set via `docker-compose.yml
 | Repo | What it provides |
 |---|---|
 | [ggerganov/llama.cpp](https://github.com/ggerganov/llama.cpp) | Upstream llama.cpp |
-| [EsmaeelNabil/llama.cpp-mtp-turbo-quant](https://github.com/EsmaeelNabil/llama.cpp-mtp-turbo-quant) | TurboQuant KV compression + MTP speculative decoding |
 | [unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF) | Q4_K_M GGUF model |
 
 ---
