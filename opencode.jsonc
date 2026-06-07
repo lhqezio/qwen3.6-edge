@@ -1,0 +1,16 @@
+{
+  "provider": {
+    "llama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local Qwen 35B (codebuddy)",
+      "options": {
+        "baseURL": "http://localhost:8081/v1"
+      },
+      "models": {
+        "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf": {
+          "name": "codebuddy"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,71 @@
+# qwen3.6-edge — Docker Compose
+#
+# Quick start:
+#   1. Download the model:
+#      pip install huggingface_hub
+#      huggingface-cli download unsloth/Qwen3.6-35B-A3B-MTP-GGUF \
+#        Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf \
+#        --local-dir ../models
+#
+#   2. Start the server:
+#      docker compose up --build
+#
+#   3. Test:
+#      curl http://localhost:8081/v1/models
+#      curl http://localhost:8081/v1/chat/completions \
+#        -H "Content-Type: application/json" \
+#        -d '{
+#          "model": "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf",
+#          "messages": [{"role": "user", "content": "Hello, world!"}]
+#        }'
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    volumes:
+      - ../models:/models:ro
+    environment:
+      - MODEL=/models/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf
+      - PORT=8081
+      - HOST=0.0.0.0
+      - CTX_SIZE=131072
+      - N_CPU_MOE=22
+      - THREADS=8
+      - PARALLEL=1
+      - CACHE_TYPE_K=turbo3
+      - CACHE_TYPE_V=turbo3
+      - SPEC_DRAFT_N_MAX=2
+      - SPEC_DRAFT_N_CPU_MOE=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Optional: opencode client (interactive coding via CLI)
+  opencode:
+    image: node:22-slim
+    volumes:
+      - ./opencode.jsonc:/root/.config/opencode/opencode.jsonc:ro
+    environment:
+      - OPENCODE_PROVIDER_LLAMA_BASE_URL=http://server:8081/v1
+    depends_on:
+      server:
+        condition: service_healthy
+    command: >
+      sh -c "npm install -g opencode && opencode"
+    profiles:
+      - interactive

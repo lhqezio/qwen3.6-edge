@@ -1,20 +1,37 @@
-*.o
-*.a
-.cache/
-# Do not ignore .git directory, otherwise the reported build number will always be 0
+# Build artifacts (we build inside Docker, not from host)
+build/
+bin/
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+
+# Git
+.git/
 .github/
-.gitignore
-.vs/
+.gitmodules
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# IDE / editor
 .vscode/
-.DS_Store
+.idea/
+*.swp
+*.swo
+*~
 
-build*/
+# Model files (should be mounted, not copied)
+models/
+*.gguf
 
-models/*
-
-/llama-cli
-/llama-quantize
-
-arm_neon.h
-compile_commands.json
-Dockerfile
+# Temporary / debug
+*.log
+*.tmp
+tmp/
+temp/
