@@ -11,12 +11,15 @@ void llama_model_qwen35moe_mtp::load_arch_hparams(llama_model_loader & ml) {
     GGML_ASSERT(hparams.nextn_predict_layers <= hparams.n_layer);
     GGML_ASSERT(hparams.n_expert > 0 && "QWEN35MOE_MTP requires n_expert > 0");
 
+    // MONKEY-PATCH: MTP head keeps the original n_layer (41) so that
+    // dev_layer is sized correctly for tensor buffer allocation lookups
+    // (tensor_il can be 0-40). The trunk layer tensors (0-39) are skipped
+    // in load_arch_tensors to avoid allocating buffers for them.
+    mtp_trunk_n_layer = hparams.n_layer;
+
     // only the MTP layers get a KV cache, trunk layers are skipped.
     hparams.kv_only_nextn         = true;
     hparams.n_layer_kv_from_start = -1;
-    for (uint32_t i = 0; i < hparams.n_layer; ++i) {
-        hparams.recurrent_layer_arr[i] = false;
-    }
 
     type = LLM_TYPE_UNKNOWN;
 }
@@ -34,41 +37,53 @@ void llama_model_qwen35moe_mtp::load_arch_tensors(llama_model_loader &) {
     const int64_t n_ff_exp   = hparams.n_ff_exp ? hparams.n_ff_exp : n_ff / n_expert_used;
     const int64_t n_ff_shexp = hparams.n_ff_shexp ? hparams.n_ff_shexp : n_ff;
 
-    const uint32_t n_main = n_layer - hparams.nextn_predict_layers;
-    for (int i = 0; i < n_layer; ++i) {
-        if (static_cast<uint32_t>(i) < n_main) {
+    // MONKEY-PATCH: MTP head keeps original n_layer (41) for dev_layer sizing,
+    // but only creates tensors for the MTP block (last block, index mtp_trunk_n_layer - 1).
+    // Trunk layer tensors (0 to mtp_trunk_n_layer - nextn_predict_layers - 1) are
+    // owned by the sibling QWEN35MOE model and are NOT loaded here.
+    const int mtp_start = (int) mtp_trunk_n_layer - (int) hparams.nextn_predict_layers;
+    for (int i = 0; i < (int) n_layer; ++i) {
+        if (i < mtp_start) {
             continue;  // trunk layer — owned by the sibling QWEN35MOE model
         }
-
+        const int tensor_il = i;  // tensor index in the GGUF = layer index
         auto & layer = layers[i];
 
         // MTP block looks like a full-attention Qwen3.5 decoder block with MoE FFN.
-        layer.attn_norm      = create_tensor(tn(LLM_TENSOR_ATTN_NORM,      "weight", i), { n_embd }, 0);
-        layer.attn_post_norm = create_tensor(tn(LLM_TENSOR_ATTN_POST_NORM, "weight", i), { n_embd }, 0);
+        layer.attn_norm      = create_tensor(tn(LLM_TENSOR_ATTN_NORM,      "weight", tensor_il), { n_embd }, 0);
+        layer.attn_post_norm = create_tensor(tn(LLM_TENSOR_ATTN_POST_NORM, "weight", tensor_il), { n_embd }, 0);
 
-        create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head * 2, n_embd_k_gqa, n_embd_v_gqa, 0);
-        layer.wo          = create_tensor(tn(LLM_TENSOR_ATTN_OUT,    "weight", i), { n_embd_head_k * n_head, n_embd }, 0);
-        layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), { n_embd_head_k }, 0);
-        layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), { n_embd_head_k }, 0);
+        // MTP block is a full-attention layer with the SAME arch as the trunk's
+        // full-attention layers (16 Q heads, 2 KV heads, head_dim=256). The Q
+        // projection outputs 2*n_head*head_dim (Q + gate interleaved), and the
+        // gate is applied as sigmoid(gate)*attn_out before o_proj. Use
+        // create_tensor_qkv to match the trunk's pattern.
+        create_tensor_qkv(layer, tensor_il, n_embd,
+            n_embd_head_k * n_head * 2,  // Q dim = 2*n_head*head_dim (includes gate)
+            n_embd_k_gqa,
+            n_embd_v_gqa, 0);
+        layer.wo          = create_tensor(tn(LLM_TENSOR_ATTN_OUT,    "weight", tensor_il), { n_embd_head_k * n_head, n_embd }, 0);
+        layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", tensor_il), { n_embd_head_k }, 0);
+        layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", tensor_il), { n_embd_head_k }, 0);
 
         // Routed experts
-        layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", i), { n_embd, n_expert }, 0);
-        layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), { n_ff_exp, n_embd, n_expert }, 0);
+        layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", tensor_il), { n_embd, n_expert }, 0);
+        layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", tensor_il), { n_ff_exp, n_embd, n_expert }, 0);
         create_tensor_gate_up_exps(layer, i, n_embd, n_ff_exp, n_expert, 0);
 
         // Shared experts
-        layer.ffn_gate_inp_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP_SHEXP, "weight", i), { n_embd }, 0);
-        layer.ffn_gate_shexp     = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP,     "weight", i), { n_embd, n_ff_shexp }, 0);
-        layer.ffn_up_shexp       = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,       "weight", i), { n_embd, n_ff_shexp }, 0);
-        layer.ffn_down_shexp     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP,     "weight", i), { n_ff_shexp, n_embd }, 0);
+        layer.ffn_gate_inp_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP_SHEXP, "weight", tensor_il), { n_embd }, 0);
+        layer.ffn_gate_shexp     = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP,     "weight", tensor_il), { n_embd, n_ff_shexp }, 0);
+        layer.ffn_up_shexp       = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,       "weight", tensor_il), { n_embd, n_ff_shexp }, 0);
+        layer.ffn_down_shexp     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP,     "weight", tensor_il), { n_ff_shexp, n_embd }, 0);
 
         // NextN-specific tensors that define the MTP block.
-        layer.nextn.eh_proj          = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ,          "weight", i), { 2 * n_embd, n_embd }, 0);
-        layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,            "weight", i), { n_embd },              0);
-        layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,            "weight", i), { n_embd },              0);
-        layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", i), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
-        layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", i), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
-        layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", i), { n_embd },              TENSOR_NOT_REQUIRED);
+        layer.nextn.eh_proj          = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ,          "weight", tensor_il), { 2 * n_embd, n_embd }, 0);
+        layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,            "weight", tensor_il), { n_embd },              0);
+        layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,            "weight", tensor_il), { n_embd },              0);
+        layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", tensor_il), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
+        layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", tensor_il), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
+        layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", tensor_il), { n_embd },              TENSOR_NOT_REQUIRED);
     }
 }
 
@@ -133,22 +148,21 @@ llama_model_qwen35moe_mtp::graph::graph(const llama_model & model, const llm_gra
     cur = build_norm(cur, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
     cb(cur, "mtp_attn_norm", il);
 
+    // MTP block is a full-attention layer with Q+gate fused in attn_q.weight.
+    // Q output dim = 2 * n_head * head_dim. Split Q and gate via view_3d.
     ggml_tensor * Qcur_full = build_lora_mm(layer.wq, cur, layer.wq_s);
     cb(Qcur_full, "mtp_Qcur_full", il);
 
-    ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full,
-            n_embd_head, n_head, n_tokens,
-            ggml_element_size(Qcur_full) * n_embd_head * 2,
-            ggml_element_size(Qcur_full) * n_embd_head * 2 * n_head,
-            0);
+    ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full, n_embd_head, n_head, n_tokens,
+        ggml_element_size(Qcur_full) * n_embd_head * 2,
+        ggml_element_size(Qcur_full) * n_embd_head * 2 * n_head, 0);
     Qcur = build_norm(Qcur, layer.attn_q_norm, nullptr, LLM_NORM_RMS, il);
     cb(Qcur, "mtp_Qcur_normed", il);
 
-    ggml_tensor * gate = ggml_view_3d(ctx0, Qcur_full,
-            n_embd_head, n_head, n_tokens,
-            ggml_element_size(Qcur_full) * n_embd_head * 2,
-            ggml_element_size(Qcur_full) * n_embd_head * 2 * n_head,
-            ggml_element_size(Qcur_full) * n_embd_head);
+    ggml_tensor * gate = ggml_view_3d(ctx0, Qcur_full, n_embd_head, n_head, n_tokens,
+        ggml_element_size(Qcur_full) * n_embd_head * 2,
+        ggml_element_size(Qcur_full) * n_embd_head * 2 * n_head,
+        ggml_element_size(Qcur_full) * n_embd_head);
     gate = ggml_cont_2d(ctx0, gate, n_embd_head * n_head, n_tokens);
     cb(gate, "mtp_gate", il);
 
@@ -176,7 +190,11 @@ llama_model_qwen35moe_mtp::graph::graph(const llama_model & model, const llm_gra
             Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
     cb(cur, "mtp_attn_pregate", il);
 
-    cur = ggml_mul(ctx0, cur, ggml_sigmoid(ctx0, gate));
+    // Apply gate: sigmoid(gate) * attn_out (same as trunk full-attention layers)
+    ggml_tensor * gate_sigmoid = ggml_sigmoid(ctx0, gate);
+    cur = ggml_mul(ctx0, cur, gate_sigmoid);
+    cb(cur, "mtp_attn_gated", il);
+
     cur = build_lora_mm(layer.wo, cur, layer.wo_s);
     cb(cur, "mtp_attn_out", il);
 

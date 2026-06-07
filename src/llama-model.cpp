@@ -1228,6 +1228,15 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         split_sum += splits[i];
         splits[i] = split_sum;
     }
+    // MONKEY-PATCH: guard against zero/NaN split_sum (can happen when device
+    // memory query returns 0, e.g. when loading a second model after the first
+    // has consumed all GPU memory). Fall back to all-on-one-device.
+    if (!(split_sum > 0.0f)) {
+        split_sum = 1.0f;
+        for (size_t i = 0; i < n_devices(); ++i) {
+            splits[i] = 1.0f;
+        }
+    }
     for (size_t i = 0; i < n_devices(); ++i) {
         splits[i] /= split_sum;
     }
@@ -1240,7 +1249,9 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(cpu_dev), is_swa);
             return {cpu_dev, &pimpl->cpu_buft_list};
         }
-        const int layer_gpu = std::upper_bound(splits.begin(), splits.begin() + n_devices(), float(il - i_gpu_start)/act_gpu_layers) - splits.begin();
+        const int layer_gpu_raw = std::upper_bound(splits.begin(), splits.begin() + n_devices(), float(il - i_gpu_start)/act_gpu_layers) - splits.begin();
+        // MONKEY-PATCH: clamp to valid range to prevent OOB on .at()
+        const int layer_gpu = std::min((int)(devices.size() - 1), std::max(0, layer_gpu_raw));
         auto * dev = devices.at(layer_gpu).dev;
         LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(dev), is_swa);
         return {dev, &pimpl->gpu_buft_list.at(dev)};

@@ -1425,8 +1425,15 @@ void launch_fattn(
 
     const dim3 block_dim(warp_size, nwarps, 1);
     int max_blocks_per_sm = 1; // Max. number of active blocks limited by occupancy.
-    CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&max_blocks_per_sm, fattn_kernel, block_dim.x * block_dim.y * block_dim.z, nbytes_shared));
-    GGML_ASSERT(max_blocks_per_sm > 0);
+    // MONKEY-PATCH: cudaOccupancyMaxActiveBlocksPerMultiprocessor can fail on sm_120
+    // even with 0 shared memory (returns cudaErrorSharedObjectInitFailed spuriously).
+    // Use __launch_bounds__ value as fallback. The VEC kernel uses launch_bounds(128, 2).
+    cudaError_t occupancy_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&max_blocks_per_sm, fattn_kernel, block_dim.x * block_dim.y * block_dim.z, nbytes_shared);
+    if (occupancy_err != cudaSuccess || max_blocks_per_sm == 0) {
+        fprintf(stderr, "launch_fattn: occupancy query failed (%s) nbytes=%zu nwarps=%d, using launch_bounds fallback\n",
+                cudaGetErrorString(occupancy_err), (size_t)nbytes_shared, nwarps);
+        max_blocks_per_sm = 2;  // from __launch_bounds__(128, 2)
+    }
     int parallel_blocks = max_blocks_per_sm;
 
     const int ntiles_KV = (K->ne[1] + nbatch_fa - 1) / nbatch_fa; // Max. number of parallel blocks limited by KV cache length.

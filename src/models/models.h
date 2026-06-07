@@ -1808,6 +1808,9 @@ struct llama_model_qwen35moe_mtp : public llama_model_base {
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+
+    // MONKEY-PATCH: original trunk n_layer, used to compute MTP block tensor indices
+    uint32_t mtp_trunk_n_layer = 0;
 };
 
 
