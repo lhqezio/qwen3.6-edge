@@ -75,26 +75,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Runtime dependencies
 # - libgomp1: OpenMP (required by llama.cpp)
 # - libcurl4: HTTP client for model downloads via --model-url (if supported)
-# - python3 + pip: for hermes-agent (agentic harness)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     libcurl4 \
-    python3 \
-    python3-pip \
-    python3-venv \
     curl \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the compiled binary from builder
 COPY --from=builder /src/build/bin/llama-server /usr/local/bin/llama-server
-
-# Install hermes-agent for the agentic harness (optional, skip if you don't need it)
-RUN pip3 install --break-system-packages \
-    hermes-agent \
-    human-eval \
-    lm-eval \
-    transformers
 
 # Model directory — mount your pre-downloaded GGUF here
 RUN mkdir -p /models
