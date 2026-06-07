@@ -28,7 +28,23 @@ cmake --build build --target llama-server -j$(nproc)
 
 ---
 
-## Patches on Top of Base Fork
+## What the Base Fork Provides (EsmaeelNabil/llama.cpp-mtp-turbo-quant)
+
+This repo builds on top of [EsmaeelNabil/llama.cpp-mtp-turbo-quant](https://github.com/EsmaeelNabil/llama.cpp-mtp-turbo-quant), which itself patches upstream llama.cpp with two major features:
+
+### TurboQuant KV Cache Compression
+
+Introduces new `turbo2` and `turbo3` cache types that compress the KV cache in-place using rotation-based quantization. This dramatically reduces memory for long-context inference, enabling 128K+ context on 16GB GPUs where the uncompressed KV cache alone would exceed VRAM.
+
+Key files changed: `src/llama-kv-cache.cpp` (+436), `src/llama-graph.cpp` (+138), `src/llama-context.cpp` (+29), plus new `src/turbo-rotation-data.h` (4103 lines of precomputed rotation matrices).
+
+### MTP Speculative Decoding
+
+Adds Multi-Token Prediction (MTP) support, allowing the model to draft multiple future tokens in a single forward pass. The draft head shares the trunk's self-attention, so draft tokens benefit from the full context window. On Qwen3.6-35B-A3B, this achieves 98-99% draft acceptance with negligible overhead.
+
+Key files added: `src/models/qwen35moe_mtp.cpp` (252 lines), `src/models/qwen35_mtp.cpp` (207 lines), `src/models/models.h` (+26). The server gains `--spec-type mtp`, `--spec-draft-n-max`, and `--spec-draft-n-cpu-moe` flags.
+
+### Our Patches (on top of the base fork)
 
 ### Patch 1: sm_120 FlashAttention Occupancy Fallback
 
@@ -83,6 +99,8 @@ The fix clamps `layer_gpu` to valid range: `std::min((int)(devices.size() - 1), 
 `docker-compose.yml` mounts `../models` as a volume and exposes port 8081.
 
 ### AMD (ROCm)
+
+> **Note:** ROCm builds are untested. Contributions welcome.
 
 `Dockerfile.rocm` follows the same multi-stage pattern but targets ROCm 6.2.4. Supports all RDNA 3 (RX 7000 series) and CDNA 2/3 (MI210, MI250, MI300X) architectures via the `AMDGPU_TARGETS` build arg.
 
