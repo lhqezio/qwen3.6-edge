@@ -1,0 +1,109 @@
+# ── qwen3.6-edge ROCm ────────────────────────────────────────────────────────
+# Same inference stack for AMD GPUs (RX 7900 XTX, MI210, MI300X, etc.)
+#
+# Build:
+#   docker build -f Dockerfile.rocm -t qwen3.6-edge-rocm .
+#
+# Run:
+#   docker run --device /dev/kfd --device /dev/dri \
+#     --group-add video --group-add render \
+#     -p 8081:8081 \
+#     -v C:\llama\models:/models:ro \
+#     qwen3.6-edge-rocm
+#
+# Architecture targets (set via AMDGPU_TARGETS build arg):
+#   gfx1100  — RDNA 3 (RX 7900 XTX/XT/GRE, W7900)
+#   gfx1101  — RDNA 3 (RX 7800 XT, 7700 XT, W7800)
+#   gfx1102  — RDNA 3 (RX 7600)
+#   gfx90a   — CDNA 2 (MI210, MI250, MI250X)
+#   gfx940   — CDNA 3 (MI300X, MI300A)
+#   native   — compile for host GPU only (default)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Stage 1: Build with ROCm/HIP
+# ═══════════════════════════════════════════════════════════════════════════════
+FROM rocm/rocm-dev:6.2.4 AS builder
+
+ARG AMDGPU_TARGETS="native"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    ninja-build \
+    git \
+    curl \
+    ca-certificates \
+    pkg-config \
+    libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone our patched fork
+RUN git clone --depth 1 --branch main \
+    https://github.com/lhqezio/qwen3.6-edge.git /src
+
+WORKDIR /src
+
+# Build with HIP (ROCm)
+RUN cmake -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_HIP=ON \
+    -DGGML_NATIVE=OFF \
+    -DAMDGPU_TARGETS="${AMDGPU_TARGETS}" \
+    -DLLAMA_CURL=ON \
+    && cmake --build build --target llama-server -j$(nproc)
+
+RUN ls -la build/bin/llama-server
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Stage 2: ROCm runtime
+# ═══════════════════════════════════════════════════════════════════════════════
+FROM rocm/rocm-runtime:6.2.4
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    libcurl4 \
+    python3 \
+    python3-pip \
+    python3-venv \
+    curl \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy binary from builder
+COPY --from=builder /src/build/bin/llama-server /usr/local/bin/llama-server
+
+# Install hermes-agent (optional)
+RUN pip3 install --break-system-packages \
+    hermes-agent \
+    human-eval \
+    lm-eval \
+    transformers
+
+RUN mkdir -p /models
+VOLUME /models
+
+WORKDIR /app
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENV MODEL=/models/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf
+ENV PORT=8081
+ENV HOST=0.0.0.0
+ENV CTX_SIZE=131072
+ENV N_CPU_MOE=22
+ENV PARALLEL=1
+ENV THREADS=8
+ENV SPEC_DRAFT_N_MAX=2
+ENV SPEC_DRAFT_N_CPU_MOE=0
+ENV CACHE_TYPE_K=turbo3
+ENV CACHE_TYPE_V=turbo3
+ENV NO_WARMUP=true
+
+EXPOSE 8081
+ENTRYPOINT ["/app/entrypoint.sh"]

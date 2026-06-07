@@ -1,0 +1,55 @@
+# qwen3.6-edge ROCm — AMD GPU variant
+#
+# Usage:
+#   docker compose -f docker-compose-rocm.yml up --build
+#
+# Target specific AMD GPU (default: native = host GPU only):
+#   docker compose -f docker-compose-rocm.yml build --build-arg AMDGPU_TARGETS=gfx1100
+#
+# Architecture targets:
+#   gfx1100  — RX 7900 XTX/XT/GRE, W7900
+#   gfx1101  — RX 7800 XT, 7700 XT, W7800
+#   gfx1102  — RX 7600
+#   gfx90a   — MI210, MI250, MI250X (CDNA 2)
+#   gfx940   — MI300X, MI300A (CDNA 3)
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.rocm
+      args:
+        AMDGPU_TARGETS: ${AMDGPU_TARGETS:-native}
+    ports:
+      - "8081:8081"
+    volumes:
+      - ../models:/models:ro
+    environment:
+      - MODEL=/models/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf
+      - PORT=8081
+      - HOST=0.0.0.0
+      - CTX_SIZE=131072
+      - N_CPU_MOE=22
+      - THREADS=8
+      - PARALLEL=1
+      - CACHE_TYPE_K=turbo3
+      - CACHE_TYPE_V=turbo3
+      - SPEC_DRAFT_N_MAX=2
+      - SPEC_DRAFT_N_CPU_MOE=0
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    # AMD GPU environment
+    environment:
+      - HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-}
+      - HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
