@@ -10,6 +10,19 @@ static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
     return 128;
 }
 
+// Blackwell (sm_120) has a larger register file per SM but the VEC kernel for D=256
+// with turbo3 dequant needs too many registers to fit 2 blocks/SM.
+// Reduce to 1 block/SM on Blackwell to prevent "shared object initialization failed".
+#ifdef __CUDA_ARCH__
+#if __CUDA_ARCH__ >= 1200
+#define FATTN_VEC_MIN_BLOCKS 1
+#else
+#define FATTN_VEC_MIN_BLOCKS 2
+#endif
+#else
+#define FATTN_VEC_MIN_BLOCKS 2
+#endif
+
 // Currently llvm with the amdgcn target does not support unrolling loops
 // that contain a break that can not be resolved at compile time.
 #ifdef __clang__
@@ -17,7 +30,7 @@ static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
 #pragma clang diagnostic ignored "-Wpass-failed"
 #endif // __clang__
 template<int D, int ncols, ggml_type type_K, ggml_type type_V, bool use_logit_softcap> // D == head size
-__launch_bounds__(ggml_cuda_fattn_vec_get_nthreads_device(), 2)
+__launch_bounds__(ggml_cuda_fattn_vec_get_nthreads_device(), FATTN_VEC_MIN_BLOCKS)
 static __global__ void flash_attn_ext_vec(
         const char * __restrict__ Q,
         const char * __restrict__ K,

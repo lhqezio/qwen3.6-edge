@@ -1432,7 +1432,7 @@ void launch_fattn(
     if (occupancy_err != cudaSuccess || max_blocks_per_sm == 0) {
         fprintf(stderr, "launch_fattn: occupancy query failed (%s) nbytes=%zu nwarps=%d, using launch_bounds fallback\n",
                 cudaGetErrorString(occupancy_err), (size_t)nbytes_shared, nwarps);
-        max_blocks_per_sm = 2;  // from __launch_bounds__(128, 2)
+        max_blocks_per_sm = 1;  // conservative fallback: 1 block/SM ensures enough registers
     }
     int parallel_blocks = max_blocks_per_sm;
 
