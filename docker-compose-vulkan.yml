@@ -1,0 +1,35 @@
+# docker-compose-vulkan.yml
+#
+# Usage:
+#   docker compose -f docker-compose-vulkan.yml up --build
+#
+# NOTE: UNTESTED. Requires Vulkan drivers on the host.
+#       Place your .gguf model in ./models/ before building.
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.vulkan
+    ports:
+      - "${PORT:-8081}:8081"
+    volumes:
+      - ./models:/models:ro
+    environment:
+      - MODEL=/models/${MODEL_FILENAME:-Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf}
+      - CTX_SIZE=${CTX_SIZE:-131072}
+      - N_CPU_MOE=${N_CPU_MOE:-22}
+      - PARALLEL=${PARALLEL:-1}
+      - THREADS=${THREADS:-8}
+      - SPEC_DRAFT_N_MAX=${SPEC_DRAFT_N_MAX:-3}
+      - SPEC_DRAFT_N_CPU_MOE=${SPEC_DRAFT_N_CPU_MOE:-0}
+      - CACHE_TYPE_K=${CACHE_TYPE_K:-turbo3}
+      - CACHE_TYPE_V=${CACHE_TYPE_V:-turbo3}
+      - NO_WARMUP=true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: vulkan
+              count: 1
+              capabilities: [gpu]

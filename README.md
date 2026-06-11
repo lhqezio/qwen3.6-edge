@@ -22,7 +22,7 @@ cmake --build build --target llama-server -j$(nproc)
   -m /path/to/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf \
   -ngl 99 --n-cpu-moe 22 -c 131072 --no-mmap \
   --cache-type-k turbo3 --cache-type-v turbo3 \
-  --spec-type mtp --spec-draft-n-max 2 --spec-draft-n-cpu-moe 0 \
+  --spec-type mtp --spec-draft-n-max 3 --spec-draft-n-cpu-moe 0 \
   --host 0.0.0.0 --port 8081
 ```
 
@@ -44,11 +44,11 @@ Key files added: `src/models/qwen35moe_mtp.cpp` (252 lines), `src/models/qwen35_
 
 ### Patch 3: sm_120 FlashAttention Occupancy Fallback
 
-**File:** `ggml/src/ggml-cuda/fattn-common.cuh:1425-1435`
+**Files:** `ggml/src/ggml-cuda/fattn-common.cuh`, `ggml/src/ggml-cuda/fattn-vec.cuh`
 
-`cudaOccupancyMaxActiveBlocksPerMultiprocessor` returns `cudaErrorSharedObjectInitFailed` spuriously on sm_120 (Blackwell) when shared memory usage is zero. This crashes the FlashAttention kernel on RTX 5060 Ti.
+The VEC flash attention kernel crashed on Blackwell (sm_120) with "shared object initialization failed". Root cause: `__launch_bounds__(128, 2)` compiles the kernel targeting 2 blocks/SM; Blackwell's SM can't fit 2 blocks of the D=256 turbo3 VEC kernel.
 
-The fix catches the failed occupancy query and falls back to the kernel's `__launch_bounds__(128, 2)` annotation, which provides a safe occupancy estimate of 2 blocks per SM.
+The fix adds a `FATTN_VEC_MIN_BLOCKS` preprocessor macro: 1 for `__CUDA_ARCH__ >= 1200`, 2 for all others. The `fattn-common.cuh` fallback is also changed from `max_blocks_per_sm = 2` to `max_blocks_per_sm = 1`. This reduces occupancy to 1 block/SM, giving the compiler more register budget.
 
 ### Patch 4: MTP Head Tensor Loading
 
@@ -102,6 +102,14 @@ The fix clamps `layer_gpu` to valid range: `std::min((int)(devices.size() - 1), 
 
 `docker-compose-rocm.yml` adds `/dev/kfd` and `/dev/dri` device mappings with `video` and `render` group access.
 
+### Vulkan (Cross-platform)
+
+> **Note:** Vulkan builds are untested. Use only if your GPU lacks CUDA/ROCm support.
+
+`Dockerfile.vulkan` builds with `-DGGML_VULKAN=ON` on a plain Ubuntu 24.04 base. Requires Vulkan drivers on the host. Vulkan backend is generally slower than native CUDA/ROCm.
+
+`docker-compose-vulkan.yml` uses the Vulkan device driver for GPU access.
+
 ### Environment Variables
 
 Both Dockerfiles accept these environment variables (set via `docker-compose.yml` or `-e`):
@@ -117,7 +125,7 @@ Both Dockerfiles accept these environment variables (set via `docker-compose.yml
 | `PARALLEL` | `1` | Parallel requests |
 | `CACHE_TYPE_K` | `turbo3` | KV cache type for keys |
 | `CACHE_TYPE_V` | `turbo3` | KV cache type for values |
-| `SPEC_DRAFT_N_MAX` | `2` | Max MTP draft tokens |
+| `SPEC_DRAFT_N_MAX` | `3` | Max MTP draft tokens |
 | `NO_WARMUP` | `true` | Skip server warmup |
 
 ---
